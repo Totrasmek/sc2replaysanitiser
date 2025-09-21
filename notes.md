@@ -31,3 +31,12 @@ frame?
 - read in file headers and display in a pretty way
 - understand how many sections there are etc.
 - plan, add a new replay.message section to the end of file? edit original hash and block entries
+
+# d.tell() notes
+- was confused about how d.tell() worked in bitpackeddecoder because reading bits in isolation throws things off
+- behaviour is -once you start reading into a byte, d.tell() returns index+1 e.g
+```
+#        v d.tell() = 1                                    ^ d.tell() = 2
+# b0     b1     b2     b3     b4     b5     b6     b7     b8    _
+# ^ d.tell() = 0                                   ^ d.tell() = 1
+```

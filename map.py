@@ -1,8 +1,11 @@
 import mpyq
 import sc2reader
+from sc2reader.decoders import BitPackedDecoder
+from sc2reader.events.message import ChatEvent
 import struct
 from io import BytesIO
 import sys
+from dataclasses import dataclass
 
 CHAT_BLOCK_NAME = 'replay.message.events'
 COPY_FILE_NAME = 'copy.SC2Replay'
@@ -77,12 +80,38 @@ if __name__ == '__main__':
     print("#########################################\nOriginal archive messages:")
     replay = sc2reader.load_replay(path)
     for message in replay.messages:
-        print(message.text) # no messages :(
+        print(message)
+        print(message.player.name)
     print()
     ####### FIND CHAT FILE #######
     chat_hash_entry = archive.get_hash_table_entry(CHAT_BLOCK_NAME)
     assert chat_hash_entry , "%s not in archive" % CHAT_BLOCK_NAME
     chat_block_entry = archive.block_table[chat_hash_entry.block_table_index]
+    ##### EDIT CHAT ENTRIES ######
+    @dataclass
+    class Msg:
+        chat_event: ChatEvent
+        offset_bits: int # offset from start of chat block to string length stored in 11bits
+    msgs: list[Msg] = []
+    data=archive.read_file(CHAT_BLOCK_NAME)
+    decoder = BitPackedDecoder(data) # bytearray(raw_data[copy_chat_block_entry.offset+archive.header['offset']:])
+    while not decoder.done():
+        decoder.read_frames()
+        pid = decoder.read_bits(5)
+        flag = decoder.read_bits(4)
+        recipient = decoder.read_bits(3 if replay.base_build >= 21955 else 2)
+        if flag == 0: # Client chat message
+            text = decoder.read_aligned_string(decoder.read_bits(11))
+            msg = msgs.append(Msg(chat_event=replay.messages[len(msgs)], offset_bits=(decoder.tell()-1)*8+decoder._bit_shift))
+        elif flag == 1: # Client ping message
+            decoder.read_uint32()
+            decoder.read_uint32()
+        elif flag == 2: # Loading progress message
+            decoder.read_uint32()
+        decoder.byte_align()
+    for msg in msgs:
+        print(msg.chat_event)
+        print(msg.offset_bits)
     ### POINT CHAT ENTRY TO END ##
     archive.file.seek(0)
     raw_data = bytearray(archive.file.read())
@@ -115,6 +144,6 @@ if __name__ == '__main__':
     print("#########################################\nCopy archive messages:")
     replay = sc2reader.load_replay(COPY_FILE_NAME)
     for message in replay.messages:
-        print(message.text) # no messages :(
+        print(message.text)
     print()
     # TODO understand the message reader frame structure
