@@ -6,6 +6,8 @@ import struct
 from io import BytesIO
 import sys
 from dataclasses import dataclass
+import bz2
+import zlib
 
 CHAT_BLOCK_NAME = 'replay.message.events'
 COPY_FILE_NAME = 'copy.SC2Replay'
@@ -72,6 +74,18 @@ def _encrypt(data, key):
 
     return result.getvalue()
 
+def compress(data):
+    """Read the compression type and compress file data."""
+    compression_type = ord(data[0:1])
+    if compression_type == 0:
+        return data
+    elif compression_type == 2:
+        return zlib.compress(data[1:], 15)
+    elif compression_type == 16:
+        return bz2.compress(data[1:])
+    else:
+        raise RuntimeError("Unsupported compression type.")
+
 if __name__ == '__main__':
     ######## LOAD ARCHIVE ########
     path = sys.argv[1]
@@ -87,13 +101,14 @@ if __name__ == '__main__':
     chat_hash_entry = archive.get_hash_table_entry(CHAT_BLOCK_NAME)
     assert chat_hash_entry , "%s not in archive" % CHAT_BLOCK_NAME
     chat_block_entry = archive.block_table[chat_hash_entry.block_table_index]
-    ##### EDIT CHAT ENTRIES ######
+    ### LOAD CHAT BIT OFFSETS ####
     @dataclass
     class Msg:
         chat_event: ChatEvent
-        offset_bits: int # offset from start of chat block to string length stored in 11bits
+        offset_bytes: int # offset from start of chat block to string length stored in 11bits
     msgs: list[Msg] = []
     data=archive.read_file(CHAT_BLOCK_NAME)
+    print(data)
     decoder = BitPackedDecoder(data) # bytearray(raw_data[copy_chat_block_entry.offset+archive.header['offset']:])
     while not decoder.done():
         decoder.read_frames()
@@ -101,27 +116,39 @@ if __name__ == '__main__':
         flag = decoder.read_bits(4)
         recipient = decoder.read_bits(3 if replay.base_build >= 21955 else 2)
         if flag == 0: # Client chat message
-            text = decoder.read_aligned_string(decoder.read_bits(11))
-            msg = msgs.append(Msg(chat_event=replay.messages[len(msgs)], offset_bits=(decoder.tell()-1)*8+decoder._bit_shift))
+            string_length=decoder.read_bits(11)
+            decoder.byte_align()
+            msgs.append(Msg(chat_event=replay.messages[len(msgs)], offset_bytes=decoder.tell()))
+            text = decoder.read_aligned_string(string_length)
         elif flag == 1: # Client ping message
             decoder.read_uint32()
             decoder.read_uint32()
         elif flag == 2: # Loading progress message
             decoder.read_uint32()
         decoder.byte_align()
+    print("#########################################\Loaded archive messages:")
     for msg in msgs:
         print(msg.chat_event)
-        print(msg.offset_bits)
+        print("Byte offset %s" % msg.offset_bytes)
+        print(data[msg.offset_bytes:msg.offset_bytes+len(msg.chat_event.text)])
+    ####### EDIT CHAT MSGS #######
+    copy_chat_block = bytearray(data[:])
+    for msg in msgs:
+        copy_chat_block[msg.offset_bytes:msg.offset_bytes+len(msg.chat_event.text)] = ("f"*len(msg.chat_event.text)).encode('utf-8')
+    if (chat_block_entry.flags & mpyq.MPQ_FILE_COMPRESS and (chat_block_entry.size > chat_block_entry.archived_size)):
+        copy_chat_block = compress(data)
     ### POINT CHAT ENTRY TO END ##
     archive.file.seek(0)
     raw_data = bytearray(archive.file.read())
     copy_chat_block_entry = chat_block_entry._replace(offset=(len(raw_data)-archive.header['offset'])) # edit block entry
-    archive.block_table[chat_hash_entry.block_table_index] = copy_chat_block_entry
+    copy_block_table = archive.block_table.copy()
+    copy_block_table[chat_hash_entry.block_table_index] = copy_chat_block_entry
     copy_block_table = bytearray()
-    for entry in archive.block_table: # Convert all entries to structs
+    for entry in copy_block_table: # Convert all entries to structs
         copy_block_table += bytearray(struct.pack(mpyq.MPQBlockTableEntry.struct_format, *entry))
     key = _hash('(block table)', 'TABLE')
     encrypted_copy_block_table = _encrypt(copy_block_table, key)
+    ### COPY CHAT BLOCK TO END ###
     block_table_start_index = (
         archive.header["offset"]
         + archive.header["block_table_offset"]
@@ -131,11 +158,8 @@ if __name__ == '__main__':
         + archive.header["block_table_offset"]
         + archive.header["block_table_entries"]*struct.calcsize(mpyq.MPQBlockTableEntry.struct_format)
     )
-    ### COPY CHAT BLOCK TO END ###
     raw_data[block_table_start_index:block_table_end_index] = encrypted_copy_block_table
-    chat_block_start_index = archive.header['offset']+chat_block_entry.offset
-    chat_block_end_index = chat_block_start_index+chat_block_entry.archived_size
-    raw_data += raw_data[chat_block_start_index:chat_block_end_index]
+    raw_data += copy_chat_block
     ######### WRITE COPY #########
     copy_file = open(COPY_FILE_NAME, 'wb')
     copy_file.write(raw_data)
