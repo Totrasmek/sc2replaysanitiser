@@ -40,3 +40,32 @@ frame?
 # b0     b1     b2     b3     b4     b5     b6     b7     b8    _
 # ^ d.tell() = 0                                   ^ d.tell() = 1
 ```
+
+# multi sector block entry
+- single sector entries need only be decompressed
+- multi sector entries dedicate first bytes to offset positions of each sector
+- there is always one extra sector that is uncompressed
+- if crc there is an extra sector though sc2reader doesnt check this?
+
+- compressed sector
+```
+sector_size = 512 << self.header['sector_size_shift']
+sectors = block_entry.size // sector_size + 1
+if crc # crc block is last and can be ignored
+    sectors += 1
+positions = data[0:4*(sectors+1)]   # positions of start of each block in compressed block
+                                    # we need to rewrite this
+
+for positio
+
+sector_bytes_left = block_entry.size                                # length of entire block
+for i in range(len(positions) - (2 if crc else 1)):                 #
+    sector = file_data[positions[i]:positions[i+1]]                 # 
+    if (block_entry.flags & MPQ_FILE_COMPRESS and                   #
+        (force_decompress or sector_bytes_left > len(sector))):     # if total bytes left is larger than a sector, decompress...
+        sector = decompress(sector)                                 # so don't decompress if there is a subsector of size less than sector_size
+
+    sector_bytes_left -= len(sector)
+    result.write(sector)
+file_data = result.getvalue()
+```

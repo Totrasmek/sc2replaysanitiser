@@ -135,16 +135,36 @@ if __name__ == '__main__':
     copy_chat_block = bytearray(data[:])
     for msg in msgs:
         copy_chat_block[msg.offset_bytes:msg.offset_bytes+len(msg.chat_event.text)] = ("f"*len(msg.chat_event.text)).encode('utf-8')
+    ########## COMPRESS ##########
+    if chat_block_entry.flags & mpyq.MPQ_FILE_ENCRYPTED:
+        raise NotImplementedError("Encryption is not supported yet.")
+    if not chat_block_entry.flags & mpyq.MPQ_FILE_SINGLE_UNIT:
+        sector_size = 512 << archive.header['sector_size_shift']
+        sectors = chat_block_entry.size // sector_size + 1
+        if chat_block_entry.flags & mpyq.MPQ_FILE_SECTOR_CRC:
+            crc = True
+            sectors += 1
+        else:
+            crc = False
+        unit_offset_store_length = 4*(sectors+1)
+        uncompressed_units = copy_chat_block[unit_offset_store_length:]
+        compressed_chat_block = bytearray()
+        for unit_offset in range(0,len(uncompressed_units),sector_size):
+            uncompressed_unit = uncompressed_units[unit_offset:unit_offset+sector_size]
+            compressed_unit = compress()
+        # section before this is dedicated to storing positions
+        # iteratively compress the next part based on sector size
+        # add to new positions as you iterate
+        for i in range()
     if (chat_block_entry.flags & mpyq.MPQ_FILE_COMPRESS and (chat_block_entry.size > chat_block_entry.archived_size)):
         copy_chat_block = compress(data)
     ### POINT CHAT ENTRY TO END ##
     archive.file.seek(0)
     raw_data = bytearray(archive.file.read())
     copy_chat_block_entry = chat_block_entry._replace(offset=(len(raw_data)-archive.header['offset'])) # edit block entry
-    copy_block_table = archive.block_table.copy()
-    copy_block_table[chat_hash_entry.block_table_index] = copy_chat_block_entry
+    archive.block_table[chat_hash_entry.block_table_index] = copy_chat_block_entry
     copy_block_table = bytearray()
-    for entry in copy_block_table: # Convert all entries to structs
+    for entry in archive.block_table: # Convert all entries to structs
         copy_block_table += bytearray(struct.pack(mpyq.MPQBlockTableEntry.struct_format, *entry))
     key = _hash('(block table)', 'TABLE')
     encrypted_copy_block_table = _encrypt(copy_block_table, key)
