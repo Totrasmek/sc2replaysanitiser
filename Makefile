@@ -1,2 +1,2 @@
 main: archive_reader.cpp
-	g++ archive_reader.cpp -o archive_reader_test -lstorm
+	g++ main.cpp message.cpp archive_reader.cpp -o test -lstorm

@@ -1,3 +1,6 @@
+#pragma once
+
+#include <vector>
 #include <iostream>
 #include <StormLib.h> // Include StormLib header
 
@@ -11,37 +14,68 @@ struct MessageHeader {
     struct __attribute__((__packed__)) MessageHeaderEnd {
         uint8_t pid : 5;
         uint8_t flag : 4;
+        uint8_t data_overrun : 7;
     };
+    std::vector<uint8_t> additional_bytes;
+    uint32_t frame;
     MessageHeaderStart header_start;
-    uint32_t additional_bytes;
     MessageHeaderEnd header_end;
 
-    bool deserialise(ArchiveReader& archive_reader) {
-        if (!archive_reader.read_from_chat_file(&header_start, sizeof(header_start))) {
-            return false;
+    void extract_frame(void) {
+        for (uint8_t frame_byte_index = 0; frame_byte_index < header_start.additional_byte_count; ++frame_byte_index) {
+            frame |= additional_bytes[frame_byte_index] << (header_start.additional_byte_count - frame_byte_index - 1) * 8;
         }
-        if (!archive_reader.read_from_chat_file(&additional_bytes, header_start.additional_byte_count)) {
-            return false;
-        }
-        if (!archive_reader.read_from_chat_file(&header_end, sizeof(header_end)) {
-            return false;
-        }
-        if (!archive_reader.move_file_pointer(-1)) {
-            return false;
-        }
-        // TODO: Possible LSB vs MSB issues here
-    };
+        frame |= header_start.time << (header_start.additional_byte_count * 8);
+    }
 
-    std::vector<uint8_t> serialise(void) {
-    };
+    bool deserialise(ArchiveReader& archive_reader) {
+        printf("deserialising\n");
+        uint8_t byte;
+        archive_reader.read_from_chat_file(&byte, 1);
+        printf("0x%02x\n", byte);
+        if (!archive_reader.read_from_chat_file(reinterpret_cast<uint8_t*>(&header_start), sizeof(header_start))) {
+            return false;
+        }
+        printf("read more\n");
+        additional_bytes.resize(header_start.additional_byte_count);
+        if (!archive_reader.read_from_chat_file(additional_bytes.data(), header_start.additional_byte_count)) {
+            return false;
+        }
+        extract_frame();
+        if (!archive_reader.read_from_chat_file(reinterpret_cast<uint8_t*>(&header_end), sizeof(header_end))) {
+            return false;
+        }
+        return true;
+    }
+
+//    std::vector<uint8_t> serialise(void) {}
+
+    void debug_print() {
+        printf( "Message Header: "
+                "additional_byte_count = 0x%02x, "
+                "time = 0x%02x, ",
+                header_start.additional_byte_count,
+                header_start.time);
+        printf("additional_bytes = ");
+        for (const uint8_t& byte : additional_bytes) {
+            printf("0x%02x ", byte);
+        }
+        printf( "frame = 0x%02x, "
+                "pid = 0x%02x, "
+                "flag = 0x%02x, "
+                "data_overrun = 0x%02x, ",
+                frame,
+                header_end.pid,
+                header_end.flag,
+                header_end.data_overrun);
+        printf("\n");
+    }
 };
 
 // How to loop this to check for EOF error return?
 // Could call the read function here and have the read function return bytes read?
 
-int main(void) {
-ArchiveReader archive_reader(); // think about initialisation and how classes should interact
-std::vector<std::unique_ptr<Message>> messages;
+/*std::vector<std::unique_ptr<Message>> messages;
 while (???) {
     MessageHeader message_header;
     if (!message_header.deserialise(archive_reader)) {
@@ -70,8 +104,7 @@ while (???) {
     }
     }
     messages.back().deserialise(archive_reader);
-}
-}
+}*/
 
 // duplicate chat messages so user can restore any actions
 // display chat messages to user
@@ -79,7 +112,7 @@ while (???) {
 // user can pop message from vector
 // user can edit message data
 // user can add a message??
-
+/*
 class Message {
 public:
     enum MessageType {
@@ -123,7 +156,7 @@ class LoadingProgressMessage : public Message {
 };
 
 class ServerPingMessage : public Message {};
-
+*/
 /*
 Build list of each event
 Edit list of events
