@@ -4,29 +4,72 @@
 
 #include "archive.hpp"
 
-Message::Message(Archive& archive) {
-    if (!archive.read_from_chat_file(reinterpret_cast<uint8_t*>(&header_start), sizeof(header_start))) {
-        throw std::runtime_error("Message deserialisation failed reading header start.");
-    }
-    if (header_start.additional_frame_byte_count > 0) {
-        additional_frame_bytes.resize(header_start.additional_frame_byte_count);
-        if (!archive.read_from_chat_file(additional_frame_bytes.data(), header_start.additional_frame_byte_count)) {
-            throw std::runtime_error("Message deserialisation failed reading additional frame bytes.");
-        }
-    }
-    extract_frame();
-    if (!archive.read_from_chat_file(reinterpret_cast<uint8_t*>(&header_end), sizeof(header_end))) {
-        throw std::runtime_error("Message deserialisation failed reading header end.");
-    }
+Message::Message(Archive& archive) : archive_(archive) {
+    extract_header();
+    extract_body();
     // then based on type read in as much as necessary
     // store raw data for non message types
 }
 
-void Message::extract_frame(void) {
-    for (uint8_t frame_byte_index = 0; frame_byte_index < header_start.additional_frame_byte_count; ++frame_byte_index) {
-        frame |= additional_frame_bytes[frame_byte_index] << (header_start.additional_frame_byte_count - frame_byte_index - 1) * 8;
+void Message::extract_header(void) {
+    if (!archive_.read_from_chat_file(reinterpret_cast<uint8_t*>(&header_start_), sizeof(header_start_))) {
+        throw std::runtime_error("Message deserialisation failed reading header start.");
     }
-    frame |= header_start.time << (header_start.additional_frame_byte_count * 8);
+    if (header_start_.additional_frame_byte_count > 0) {
+        additional_frame_bytes_.resize(header_start_.additional_frame_byte_count);
+        if (!archive_.read_from_chat_file(additional_frame_bytes_.data(), header_start_.additional_frame_byte_count)) {
+            throw std::runtime_error("Message deserialisation failed reading additional frame bytes.");
+        }
+    }
+    extract_frame();
+    if (!archive_.read_from_chat_file(reinterpret_cast<uint8_t*>(&header_end_), sizeof(header_end_))) {
+        throw std::runtime_error("Message deserialisation failed reading header end.");
+    }
+}
+
+void Message::extract_frame(void) {
+    for (uint8_t frame_byte_index = 0; frame_byte_index < header_start_.additional_frame_byte_count; ++frame_byte_index) {
+        frame_ |= additional_frame_bytes_[frame_byte_index] << (header_start_.additional_frame_byte_count - frame_byte_index - 1) * 8;
+    }
+    frame_ |= header_start_.time << (header_start_.additional_frame_byte_count * 8);
+}
+
+void Message::extract_body(void) {
+    switch (header_end_.flag) {
+    case CLIENT_CHAT_MESSAGE: {
+        /*3bits recipient or 2 based on 'base build'... shit need to read another file
+        what is base build?
+        11 bits for string size
+        read(string_size)
+        align byte*/
+        break;
+    }
+    case CLIENT_PING_MESSAGE: {
+        /*3bits recipient or 2 based on 'base build'... shit need to read another file
+        uint32_t
+        uint32_t
+        so 9B, don't need base build
+        ... or do we? 3bits reads inside the previous byte which was already overrun
+        do the uin32_t reads happen byte aligned?*/
+        break;
+    }
+    case LOADING_PROGRESS_MESSAGE: {
+        /*4B*/
+        break;
+    }
+    case SERVER_PING_MESSAGE: {
+        /*pass*/
+        break;
+    }
+    default: {
+        throw std::runtime_error(
+            std::string("Message deserialisation failed unsupported message type: ")
+            + std::to_string(static_cast<int>(header_end_.flag))
+            + std::string(".")
+        );
+        break;
+    }
+    }
 }
 
 //    std::vector<uint8_t> serialise(void) {}
@@ -35,20 +78,20 @@ void Message::debug_print() {
     printf( "Message Header: "
             "additional_frame_byte_count = 0x%02x, "
             "time = 0x%02x, ",
-            header_start.additional_frame_byte_count,
-            header_start.time);
-    printf("additional_frame_bytes = ");
-    for (const uint8_t& byte : additional_frame_bytes) {
+            header_start_.additional_frame_byte_count,
+            header_start_.time);
+    printf("additional_frame_bytes_ = ");
+    for (const uint8_t& byte : additional_frame_bytes_) {
         printf("0x%02x ", byte);
     }
     printf( "frame = 0x%02x, "
             "pid = 0x%02x, "
             "flag = 0x%02x, "
             "data_overrun = 0x%02x.",
-            frame,
-            header_end.pid,
-            header_end.flag,
-            header_end.data_overrun);
+            frame_,
+            header_end_.pid,
+            header_end_.flag,
+            header_end_.data_overrun);
     printf("\n");
 }
 
@@ -62,7 +105,7 @@ while (???) {
         std::cout << "Failed deserialising archive reader" << std::endl;
         return 1;
     }
-    switch (message_header.header_end.flag) {
+    switch (message_header.header_end_.flag) {
     case CLIENT_CHAT_MESSAGE: {
         messages.push_back(std::make_unique<ClientChatMessage>(message_header));
         break;
@@ -80,7 +123,7 @@ while (???) {
         break;
     }
     default: {
-        throw std::runtime_error(std::string("Unsupported message event flag" + message_header.header_end.flag));
+        throw std::runtime_error(std::string("Unsupported message event flag" + message_header.header_end_.flag));
     }
     }
     messages.back().deserialise(archive);
