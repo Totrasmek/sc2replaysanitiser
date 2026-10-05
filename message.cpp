@@ -5,13 +5,13 @@
 #include "archive.hpp"
 
 Message::Message(Archive& archive) : archive_(archive) {
-    extract_header();
-    extract_body();
+    read_header();
+    read_body();
     // then based on type read in as much as necessary
     // store raw data for non message types
 }
 
-void Message::extract_header(void) {
+void Message::read_header(void) {
     if (!archive_.read_from_chat_file(reinterpret_cast<uint8_t*>(&header_start_), sizeof(header_start_))) {
         throw std::runtime_error("Message deserialisation failed reading header start.");
     }
@@ -21,44 +21,35 @@ void Message::extract_header(void) {
             throw std::runtime_error("Message deserialisation failed reading additional frame bytes.");
         }
     }
-    extract_frame();
+    read_frame();
     if (!archive_.read_from_chat_file(reinterpret_cast<uint8_t*>(&header_end_), sizeof(header_end_))) {
         throw std::runtime_error("Message deserialisation failed reading header end.");
     }
 }
 
-void Message::extract_frame(void) {
+void Message::read_frame(void) {
     for (uint8_t frame_byte_index = 0; frame_byte_index < header_start_.additional_frame_byte_count; ++frame_byte_index) {
         frame_ |= additional_frame_bytes_[frame_byte_index] << (header_start_.additional_frame_byte_count - frame_byte_index - 1) * 8;
     }
     frame_ |= header_start_.time << (header_start_.additional_frame_byte_count * 8);
 }
 
-void Message::extract_body(void) {
+void Message::read_body(void) {
+    // sc2reader claims big endian, but we assume little endian
     switch (header_end_.flag) {
     case CLIENT_CHAT_MESSAGE: {
-        /*3bits recipient or 2 based on 'base build'... shit need to read another file
-        what is base build?
-        11 bits for string size
-        read(string_size)
-        align byte*/
+        read_client_chat_message();
         break;
     }
     case CLIENT_PING_MESSAGE: {
-        /*3bits recipient or 2 based on 'base build'... shit need to read another file
-        uint32_t
-        uint32_t
-        so 9B, don't need base build
-        ... or do we? 3bits reads inside the previous byte which was already overrun
-        do the uin32_t reads happen byte aligned?*/
+        read_client_ping_message();
         break;
     }
     case LOADING_PROGRESS_MESSAGE: {
-        /*4B*/
+        read_loading_progress_message();
         break;
     }
     case SERVER_PING_MESSAGE: {
-        /*pass*/
         break;
     }
     default: {
@@ -69,6 +60,44 @@ void Message::extract_body(void) {
         );
         break;
     }
+    }
+}
+
+void Message::read_client_chat_message(void) {
+    /*
+    // alternative with more bit bashing but less pointers
+    recipient_.value = header_end_.body_overrun & 0x07;
+    uint8_t chat_message_length_upper_bits;
+    if (!archive_.read_from_chat_file(&chat_message_length_upper_bits, 1)) {
+        throw std::runtime_error("Message deserialisation failed reading client chat message length.");
+    }
+    chat_message_length.value = (header_end_.body_overrun >> 4) | ((chat_message_length_upper_bits & 0x7F)) << 3);
+    chat_message_.resize(chat_message_length.value);
+    if (!archive_.read_from_chat_file(&chat_message_.data(), chat_message_length.value)) {
+        throw std::runtime_error("Message deserialisation failed reading client chat message.");
+    }
+    */
+    memcpy(&client_chat_message_, ((uint8_t*)&header_end_)+1, 1);
+    if (!archive_.read_from_chat_file(((uint8_t*)&client_chat_message_)+1, 1)) {
+        throw std::runtime_error("Message deserialisation failed reading client chat message length.");
+    }
+    chat_message_.resize(client_chat_message_.chat_message_length);
+    if (!archive_.read_from_chat_file((uint8_t*)chat_message_.data(), client_chat_message_.chat_message_length)) {
+        throw std::runtime_error("Message deserialisation failed reading client chat message.");
+    }
+}
+
+void Message::read_client_ping_message(void) {
+    memcpy(&client_ping_message_, ((uint8_t*)&header_end_)+1, 1);
+    if (!archive_.read_from_chat_file(((uint8_t*)&client_ping_message_)+1, 8)) {
+        throw std::runtime_error("Message deserialisation failed reading client ping message length.");
+    }
+}
+
+void Message::read_loading_progress_message(void) {
+    memcpy(&loading_progress_message_, ((uint8_t*)&header_end_)+1, 1);
+    if (!archive_.read_from_chat_file(((uint8_t*)&loading_progress_message_)+1, 4)) {
+        throw std::runtime_error("Message deserialisation failed reading loading progress message length.");
     }
 }
 
@@ -87,11 +116,21 @@ void Message::debug_print() {
     printf( "frame = 0x%02x, "
             "pid = 0x%02x, "
             "flag = 0x%02x, "
-            "data_overrun = 0x%02x.",
+            "body_overrun = 0x%02x, ",
             frame_,
             header_end_.pid,
             header_end_.flag,
             header_end_.data_overrun);
+    if (header_end_.flag == CLIENT_CHAT_MESSAGE) {
+        printf(
+                "recipient = 0x%02x, "
+                "chat_message_length = 0x%04x, "
+                "chat_message = %s.",
+                client_chat_message_.recipient,
+                client_chat_message_.chat_message_length,
+                chat_message_.c_str()
+        );
+    }
     printf("\n");
 }
 
